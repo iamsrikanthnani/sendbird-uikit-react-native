@@ -21,7 +21,7 @@ import type {
   SendbirdMember,
   SendbirdUser,
 } from '@sendbird/uikit-utils';
-import { useIsFirstMount } from '@sendbird/uikit-utils';
+import { NOOP, useIsFirstMount } from '@sendbird/uikit-utils';
 
 import { LocalizationContext, LocalizationProvider } from '../contexts/LocalizationCtx';
 import { PlatformServiceProvider } from '../contexts/PlatformServiceCtx';
@@ -86,6 +86,7 @@ export type SendbirdUIKitContainerProps = React.PropsWithChildren<{
     HeaderComponent?: HeaderStyleContextType['HeaderComponent'];
   };
   errorBoundary?: {
+    disabled?: boolean;
     onError?: (props: ErrorBoundaryProps) => void;
     ErrorInfoComponent?: (props: ErrorBoundaryProps) => JSX.Element;
   };
@@ -142,17 +143,20 @@ const SendbirdUIKitContainer = ({
       trigger: MentionConfig.DEFAULT.TRIGGER,
     });
     return new MentionManager(config, chatOptions?.enableUserMention ?? SendbirdUIKit.DEFAULT.USER_MENTION);
-  }, [userMention?.mentionLimit, userMention?.suggestionLimit, userMention?.debounceMills]);
+  }, [
+    chatOptions?.enableUserMention,
+    userMention?.mentionLimit,
+    userMention?.suggestionLimit,
+    userMention?.debounceMills,
+  ]);
 
-  const imageCompressionConfig = useMemo(
-    () =>
-      new ImageCompressionConfig({
-        compressionRate: imageCompression?.compressionRate || ImageCompressionConfig.DEFAULT.COMPRESSION_RATE,
-        width: imageCompression?.width,
-        height: imageCompression?.height,
-      }),
-    [imageCompression?.compressionRate, imageCompression?.width, imageCompression?.height],
-  );
+  const imageCompressionConfig = useMemo(() => {
+    return new ImageCompressionConfig({
+      compressionRate: imageCompression?.compressionRate || ImageCompressionConfig.DEFAULT.COMPRESSION_RATE,
+      width: imageCompression?.width,
+      height: imageCompression?.height,
+    });
+  }, [imageCompression?.compressionRate, imageCompression?.width, imageCompression?.height]);
 
   useLayoutEffect(() => {
     if (!isFirstMount) {
@@ -171,6 +175,14 @@ const SendbirdUIKitContainer = ({
       }
     };
   }, [appId, internalStorage]);
+
+  const renderChildren = () => {
+    if (errorBoundary?.disabled) {
+      return children;
+    } else {
+      return <InternalErrorBoundaryContainer {...errorBoundary}>{children}</InternalErrorBoundaryContainer>;
+    }
+  };
 
   return (
     <SafeAreaProvider>
@@ -212,6 +224,7 @@ const SendbirdUIKitContainer = ({
                   <UserProfileProvider
                     onCreateChannel={userProfile?.onCreateChannel}
                     onBeforeCreateChannel={userProfile?.onBeforeCreateChannel}
+                    statusBarTranslucent={styles?.statusBarTranslucent ?? true}
                   >
                     <ReactionProvider>
                       <LocalizationContext.Consumer>
@@ -228,9 +241,7 @@ const SendbirdUIKitContainer = ({
                                 },
                               }}
                             >
-                              <InternalErrorBoundaryContainer {...errorBoundary}>
-                                {children}
-                              </InternalErrorBoundaryContainer>
+                              {renderChildren()}
                             </DialogProvider>
                           );
                         }}
@@ -276,9 +287,28 @@ const initializeSendbird = (
   }
 
   if (NetInfo?.addEventListener) {
+    try {
+      // NOTE: For removing buggy behavior of NetInfo.addEventListener
+      //  When you first add an event listener, it is assumed that the initialization of the internal event detector is done simultaneously.
+      //  In other words, when you call the first event listener two events are triggered immediately
+      //   - the one that is called when adding the event listener
+      //   - and the internal initialization event
+      NetInfo.addEventListener(NOOP)();
+    } catch {}
+
     const listener = (callback: () => void, callbackType: 'online' | 'offline') => {
+      let callCount = 0;
       const unsubscribe = NetInfo.addEventListener((state) => {
         const online = Boolean(state.isConnected) || Boolean(state.isInternetReachable);
+
+        // NOTE: When NetInfo.addEventListener is called
+        //  the event is immediately triggered regardless of whether the event actually occurred.
+        //  This is why it filters the first event.
+        if (callCount === 0) {
+          callCount++;
+          return;
+        }
+
         if (online && callbackType === 'online') callback();
         if (!online && callbackType === 'offline') callback();
       });
